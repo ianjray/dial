@@ -1,0 +1,66 @@
+.POSIX:
+.SUFFIXES:
+.SUFFIXES: .c .o .uto
+
+VERSION    = 1.0.0
+
+CC         = @CC@
+CCOV       = gcov
+CFLAGS     = @CFLAGS@
+CFLAGS_COV = @CFLAGS_COV@
+CFLAGS_SAN = @CFLAGS_SAN@
+INCLUDEDIR = @PREFIX@/include
+LD         = @LD@
+LIBDIR     = @PREFIX@/lib
+PREFIX     = @PREFIX@
+
+.PHONY: all
+all: libdial.a dial.coverage
+
+libdial.a: dial.o
+	$(LD) -r $^ -o $@
+
+.c.o:
+	$(CC) $(CFLAGS) -c $^ -o $@
+
+.c.uto:
+	$(CC) $(CFLAGS) $(CFLAGS_COV) $(CFLAGS_SAN) -c $^ -o $@
+
+dial.coverage: dial.uto test_dial.uto
+	$(CC) $(CFLAGS) $(CFLAGS_COV) $(CFLAGS_SAN) $^ -o $@
+	./$@
+	$(CCOV) dial.c
+	! grep "#####" dial.c.gcov |grep -ve "// UNREACHABLE$$"
+
+libdial.pc:
+	( echo 'Name: libdial' ;\
+	echo 'Version: $(VERSION)' ;\
+	echo 'Description: C socket library' ;\
+	echo 'prefix=$(PREFIX)' ;\
+	echo 'exec_prefix=$${prefix}' ;\
+	echo 'includedir=$${prefix}/include' ;\
+	echo 'libdir=$${prefix}/lib' ;\
+	echo 'Cflags: -I$${includedir}' ;\
+	echo 'Libs: -L$${libdir} -ldial' ) > $@
+
+.PHONY: install
+install: dial.h libdial.a libdial.pc
+	mkdir -p $(INCLUDEDIR)/libdial
+	mkdir -p $(LIBDIR)/pkgconfig
+	install -m644 dial.h $(INCLUDEDIR)/libdial/dial.h
+	install -m644 libdial.a $(LIBDIR)/libdial.a
+	install -m644 libdial.pc $(LIBDIR)/pkgconfig/libdial.pc
+
+.PHONY: uninstall
+uninstall:
+	rm -f $(INCLUDEDIR)/libdial/dial.h
+	rm -f $(LIBDIR)/libdial.a
+	rm -f $(LIBDIR)/pkgconfig/libdial.pc
+
+.PHONY: clean
+clean:
+	rm -rf libdial.a libdial.pc *.o *.uto *.gc?? *.coverage
+
+.PHONY: distclean
+distclean: clean
+	rm -f Makefile config.status
