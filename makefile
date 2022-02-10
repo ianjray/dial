@@ -2,21 +2,23 @@ CC       = clang
 SANITIZE = -fsanitize=address -fsanitize=undefined-trap -fsanitize-undefined-trap-on-error
 COVERAGE = -fprofile-instr-generate -fcoverage-mapping
 OPTS     = $(SANITIZE) $(COVERAGE) -Weverything -Wno-padded -Wno-poison-system-directories
+XCRUN    = xcrun
 
 .PHONY : all
 all : dial.coverage
 
 %.coverage : %.profdata
-	xcrun llvm-cov show $*.unittest -instr-profile=$< $*.c > $@
+	$(XCRUN) llvm-cov show $*.unittest -instr-profile=$< $*.c > $@
 	! grep " 0|" $@ |grep -ve //UNREACHABLE
+	echo PASS $@
 
 %.profdata : %.profraw
-	xcrun llvm-profdata merge -sparse $< -o $@
+	$(XCRUN) llvm-profdata merge -sparse $< -o $@
 
 %.profraw : %.unittest
 	LLVM_PROFILE_FILE=$@ ./$<
 
-%.unittest : test_dial.c dial.c
+%.unittest : test_%.c %.c
 	$(CC) $(OPTS) $^ -o $@
 
 .PHONY : clean
