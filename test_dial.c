@@ -159,4 +159,7 @@ int main(void)
     roundtrip("tcp6", "::1",       "49154");
     roundtrip("udp",  "localhost", "49155");
     roundtrip("udp4", "127.0.0.1", "49156");
+
+    free(too_long);
+    too_long = NULL;
 }
