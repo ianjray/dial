@@ -1,6 +1,7 @@
 #include "dial.h"
 
 #include <arpa/inet.h>
+#include <assert.h>
 #include <errno.h>
 #include <netdb.h>
 #include <stdio.h>
@@ -51,73 +52,101 @@ static int net_type(int fd)
 static void roundtrip(char const *protname, char const *hostname, char const *servname)
 {
     int server;
+    int client;
+    char buf[8];
+    ssize_t ret;
+    fd_set fds_;
+    fd_set set;
 
     printf("roundtrip(%s, %s, %s)\n", protname, hostname, servname);
-    server = net_listen(protname, hostname, servname);
-    if (server >= 0) {
-        int client = net_dial(protname, hostname, servname);
-        printf("  serving %s,%s on socket %d; client socket %d\n", protname, hostname, server, client);
-        if (client >= 0) {
-            char buf[2];
-            ssize_t ret;
-            fd_set fds_;
-            fd_set set;
 
-            buf[0] = 0x42;
-            buf[1] = 0x2A;
-            ret = send(client, buf, 2, 0);
-            printf("  send %zd\n", ret);
-            memset(buf, 0, sizeof(buf));
+    server = net_listen(protname, hostname, servname);
+    if (server < 0) {
+        perror("net_listen");
+    }
+    assert(server >= 0);
+
+    client = net_dial(protname, hostname, servname);
+    printf("\tserving %s,%s on socket %d; client socket %d\n", protname, hostname, server, client);
+    if (client < 0) {
+        perror("net_dial");
+    }
+    assert(client >= 0);
+
+    memset(buf, 0, sizeof(buf));
+    buf[0] = 0x11;
+    buf[1] = 0x22;
+    ret = send(client, buf, 2, 0);
+    printf("\tsend=%zd\n", ret);
+    assert(ret == 2);
+
+    FD_ZERO(&fds_);
+    FD_SET(server, &fds_);
+    set = fds_;
+    ret = select(FD_SETSIZE, &set, (fd_set *)0, (fd_set *)0, NULL);
+    printf("\tselect=%zd\n", ret);
+    assert(ret >= 0);
+
+    if (FD_ISSET(server, &set)) {
+        int fd = -1;
+        if (net_type(server) == SOCK_DGRAM) {
+            fd = server;
+        } else {
+            int afd = accept(server, NULL, NULL);
+            printf("\taccept=%d\n", afd);
+            assert(afd >= 0);
 
             FD_ZERO(&fds_);
-            FD_SET(server, &fds_);
+            FD_SET(afd, &fds_);
             set = fds_;
-            select(FD_SETSIZE, &set, (fd_set *) 0, (fd_set *) 0, NULL);
-            if (FD_ISSET(server, &set)) {
-                int fd = -1;
-                if (net_type(server) != SOCK_DGRAM) {
-                    int afd = accept(server, NULL, NULL);
-                    FD_SET(afd, &fds_);
-                    set = fds_;
-                    select(FD_SETSIZE, &set, (fd_set *) 0, (fd_set *) 0, NULL);
-                    if (afd >= 0 && FD_ISSET(afd, &set)) {
-                        fd = afd;
-                    }
-                } else {
-                    fd = server;
-                }
-                ret = recv(fd, buf, 2, 0);
-                printf("  recv %zd : ", ret);
-                if (ret > 0) {
-                    for (int i = 0; i < ret; ++i) {
-                        if (i > 0) {
-                            putchar(',');
-                        }
-                        printf("%x", buf[i]);
-                    }
-                    putchar('\n');
-                }
-                if (fd >= 0 && fd != server) {
-                    printf("  close %d\n", fd);
-                    close(fd);
-                }
+            ret = select(FD_SETSIZE, &set, (fd_set *)0, (fd_set *)0, NULL);
+            printf("\tselect=%zd\n", ret);
+            assert(ret >= 0);
+
+            if (FD_ISSET(afd, &set)) {
+                fd = afd;
             }
         }
-        if (client >= 0) {
-            printf("  close %d\n", client);
-            close(client);
-        } else {
-            errno = -client;
-            perror("client");
+
+        struct sockaddr_storage remote;
+        socklen_t remote_length = sizeof(remote);
+
+        memset(buf, 0, sizeof(buf));
+        ret = recvfrom(fd, buf, sizeof(buf), 0, (struct sockaddr *)&remote, &remote_length);
+        printf("\trecvfrom=%zd (%d)\n", ret, remote_length);
+        assert(ret == 2);
+        assert(buf[0] == 0x11);
+        assert(buf[1] == 0x22);
+
+        // Send back to client (if address available).
+        if (remote_length && (remote.ss_family != AF_UNIX || ((struct sockaddr_un *)&remote)->sun_path[0])) {
+            memset(buf, 0, sizeof(buf));
+            buf[0] = 0x10;
+            buf[1] = 0x20;
+            buf[2] = 0x30;
+            ret = sendto(fd, buf, 3, 0, (struct sockaddr *)&remote, remote_length);
+            printf("\tsendto=%zd\n", ret);
+            assert(ret == 3);
+
+            memset(buf, 0, sizeof(buf));
+            ret = recv(client, buf, sizeof(buf), 0);
+            printf("\trecv=%zd\n", ret);
+            assert(ret == 3);
+            assert(buf[0] == 0x10);
+            assert(buf[1] == 0x20);
+            assert(buf[2] == 0x30);
+        }
+
+        if (fd >= 0 && fd != server) {
+            printf("\tclose=%d\n", fd);
+            close(fd);
         }
     }
-    if (server >= 0) {
-        printf("  close %d\n", server);
-        close(server);
-    } else {
-        errno = -server;
-        perror("server");
-    }
+
+    printf("\tclose=%d\n", client);
+    close(client);
+    printf("\tclose=%d\n", server);
+    close(server);
 }
 
 int main(void)
@@ -150,7 +179,7 @@ int main(void)
     // existing file, not a socket
     system("touch foo");
     fail(-ENOTSOCK,          "unix",     "127.0.0.1", "foo");
-    listen_fail(-EADDRINUSE, "unix",   "localhost", "foo");
+    listen_fail(-EADDRINUSE, "unix",     "localhost", "foo");
     unlink("foo");
 
     roundtrip("unix", "", "foo");
@@ -162,7 +191,7 @@ int main(void)
     roundtrip("tcp4", "localhost", "49152");
     roundtrip("tcp6", "localhost", "49153");
     roundtrip("tcp6", "::1",       "49154");
-    roundtrip("udp",  "localhost", "49155");
+    roundtrip("udp4", "localhost", "49155");
     roundtrip("udp4", "127.0.0.1", "49156");
 
     free(too_long);
